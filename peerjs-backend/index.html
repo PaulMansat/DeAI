@@ -47,15 +47,48 @@ function assignWeightsToModel(serializedWeights, model) {
     model.weights.forEach((weight, idx) => {
         const serializedWeight = serializedWeights[idx]["$variable"];
         const tensor = deserializeTensor(serializedWeight.val);
-        weight.val.assign(tensor);
+        weight.val.assign(tf.div(tf.add(tensor, weight.val), tf.scalar(2)));
         tensor.dispose();
     });
 }
 
 peer = null
-const model = tf.sequential();
-model.add(tf.layers.dense({units: 32, inputShape: [50]}));
-model.add(tf.layers.dense({units: 4}));
+
+const model = tf.sequential({
+ layers: [
+   tf.layers.dense({inputShape: [784], units: 32, activation: 'relu'}),
+   tf.layers.dense({units: 10, activation: 'softmax'}),
+ ]
+});
+
+model.compile({
+  optimizer: 'sgd',
+  loss: 'categoricalCrossentropy',
+  metrics: ['accuracy']
+});
+
+function* data() {
+ for (let i = 0; i < 100; i++) {
+   // Generate one sample at a time.
+   yield tf.randomNormal([784]);
+ }
+}
+
+function* labels() {
+ for (let i = 0; i < 100; i++) {
+   // Generate one sample at a time.
+   yield tf.randomUniform([10]);
+ }
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+const xs = tf.data.generator(data);
+const ys = tf.data.generator(labels);
+// We zip the data and labels together, shuffle and batch 32 samples at a time.
+const ds = tf.data.zip({xs, ys}).shuffle(100 /* bufferSize */).batch(32);
 
 function register() {
   const username = document.getElementById("username").value
@@ -73,30 +106,44 @@ peer = new Peer(username, {host: 'localhost', port: 9000, path: '/myapp'})
 //   ]} 
 // }
 // )
-
+neighbour_weihts = {}
 peer.on('connection', (conn) => {
   console.log('new connection')
   conn.on('open',function(){
   conn.on('data', (data) => {
     res = new Uint8Array(data['msg'])
+    epoch = data['epoch']
+    neighbour_weihts[epoch] = res;
     console.log(data);
-    assignWeightsToModel(msgpack.decode(res), model);
   })})
 })
 }
 
 async function send() {
-  const receiver = document.getElementById("receiver").value
-  
-  const msg = msgpack.encode(await serializeModel(model));
-  console.log(msg);
-  data = {'epoch': 0, 'msg': msg}
+  const receiver = document.getElementById("receiver").value;
 
-  const conn = peer.connect(receiver)
-
+  for (let i = 0; i < 10; i++) {
+  finished = false;
+  model.fitDataset(ds, {epochs: 1}).then(info => {
+  console.log('Accuracy', info.history.acc);
+  finished = true
+  });
+  msg = msgpack.encode(await serializeModel(model));
+  data = {'epoch': i, 'msg': msg};
+  conn = peer.connect(receiver);
   conn.on('open', () => {
     conn.send(data)
   })
+  console.log(i);
+  while (true){
+    await sleep(1000);
+    if(finished && i in neighbour_weihts){
+      assignWeightsToModel(msgpack.decode(neighbour_weihts[i]), model);
+      break;
+    }
+  }
+}
+  
 }
 
 </script>
